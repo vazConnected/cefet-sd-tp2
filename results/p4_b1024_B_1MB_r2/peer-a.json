@@ -1,0 +1,39 @@
+{
+  "peer": "172.28.0.11:5000",
+  "role": "seeder",
+  "neighbors": [
+    "172.28.0.12:5000",
+    "172.28.0.13:5000"
+  ],
+  "started_at": "2026-10-12T20:45:42.383+00:00",
+  "stopped_at": "2026-10-12T20:45:42.882+00:00",
+  "metadata": {
+    "name": "file.bin",
+    "size": 1048576,
+    "block_size": 1024,
+    "block_count": 1024,
+    "sha256": "25e017a08e7892979989b1bacbfe2b07b3603bdac1bb6d13d1e2614622771fab"
+  },
+  "blocks_have": 1024,
+  "completion": null,
+  "blocks_by_source": {},
+  "blocks_served": {
+    "172.28.0.12:5000": 560,
+    "172.28.0.13:5000": 601
+  },
+  "messages": {
+    "sent": {
+      "BITFIELD": 2,
+      "HELLO": 2,
+      "META": 2,
+      "PIECE": 1161
+    },
+    "received": {
+      "BITFIELD": 2,
+      "GET_META": 2,
+      "HAVE": 2048,
+      "HELLO": 2,
+      "REQUEST": 1161
+    }
+  }
+}

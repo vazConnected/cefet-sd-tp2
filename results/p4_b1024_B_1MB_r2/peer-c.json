@@ -1,0 +1,57 @@
+{
+  "peer": "172.28.0.13:5000",
+  "role": "leecher",
+  "neighbors": [
+    "172.28.0.11:5000",
+    "172.28.0.12:5000",
+    "172.28.0.14:5000"
+  ],
+  "started_at": "2026-10-12T20:45:42.388+00:00",
+  "stopped_at": "2026-10-12T20:45:42.882+00:00",
+  "metadata": {
+    "name": "file.bin",
+    "size": 1048576,
+    "block_size": 1024,
+    "block_count": 1024,
+    "sha256": "25e017a08e7892979989b1bacbfe2b07b3603bdac1bb6d13d1e2614622771fab"
+  },
+  "blocks_have": 1024,
+  "completion": {
+    "at": "2026-10-12T20:45:42.571+00:00",
+    "elapsed_seconds": 0.181,
+    "download_seconds": 0.177,
+    "file": "/data/file.bin",
+    "size": 1048576,
+    "sha256": "25e017a08e7892979989b1bacbfe2b07b3603bdac1bb6d13d1e2614622771fab",
+    "integrity_ok": true
+  },
+  "blocks_by_source": {
+    "172.28.0.11:5000": 601,
+    "172.28.0.12:5000": 354,
+    "172.28.0.14:5000": 69
+  },
+  "blocks_served": {
+    "172.28.0.12:5000": 418,
+    "172.28.0.14:5000": 512
+  },
+  "messages": {
+    "sent": {
+      "BITFIELD": 3,
+      "GET_META": 1,
+      "HAVE": 3056,
+      "HELLO": 3,
+      "META": 1,
+      "PIECE": 930,
+      "REQUEST": 1024
+    },
+    "received": {
+      "BITFIELD": 3,
+      "GET_META": 1,
+      "HAVE": 2048,
+      "HELLO": 3,
+      "META": 1,
+      "PIECE": 1024,
+      "REQUEST": 930
+    }
+  }
+}
