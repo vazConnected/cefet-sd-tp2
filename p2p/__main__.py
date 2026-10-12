@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import logging
+import signal
 import sys
 from pathlib import Path
 
@@ -36,11 +37,15 @@ def run_peer(args: argparse.Namespace) -> int:
         raise ValueError("--file and --meta must be given together")
     logging.basicConfig(level=logging.INFO, format=f"%(asctime)s [{args.host}:{args.port}] %(message)s")
     store = BlockStore.from_file(Metadata.load(args.meta), args.file) if args.file else None
-    try:
-        asyncio.run(Peer(args.host, args.port, args.neighbors, store, args.output_dir, args.log_messages).run())
-    except KeyboardInterrupt:
-        pass
+    asyncio.run(serve(Peer(args.host, args.port, args.neighbors, store, args.output_dir, args.log_messages)))
     return 0
+
+
+async def serve(peer: Peer) -> None:
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, peer.stopping.set)
+    await peer.run()
 
 
 def build_parser() -> argparse.ArgumentParser:

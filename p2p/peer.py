@@ -130,6 +130,7 @@ class Connection:
                 self.send(MessageType.REJECT, payload)
             else:
                 self.send(MessageType.PIECE, protocol.pack_piece(index, data))
+                self.peer.served[self.remote_id] += 1
         elif msg_type is MessageType.PIECE:
             index, data = protocol.unpack_piece(payload)
             self.resolve(index, data)
@@ -160,6 +161,7 @@ class Peer:
         self.metadata_source: Connection | None = None
         self.wanted: set[int] = set()
         self.sources: Counter[str] = Counter()
+        self.served: Counter[str] = Counter()
         self.messages = {"sent": Counter(), "received": Counter()}
         self.reported_decile = 0
         self.availability = asyncio.Event()
@@ -168,6 +170,10 @@ class Peer:
         self.started_at = now()
         self.started = time.monotonic()
         self.metadata_received = self.started
+        self.role = "seeder" if store else "leecher"
+        self.completion: dict | None = None
+        self.stopped_at: str | None = None
+        self.stopping = asyncio.Event()
         if store:
             self.metadata_ready.set()
 
@@ -191,23 +197,31 @@ class Peer:
             self.spawn(self.connect(host, port))
         if not self.store:
             self.spawn(self.download())
-        async with server:
-            await server.serve_forever()
+        try:
+            await self.stopping.wait()
+        finally:
+            server.close()
+            for connection in list(self.connections):
+                connection.close()
+        self.stopped_at = now()
+        self.write_summary()
+        log.info("stopped")
 
     async def accept(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         await Connection(self, reader, writer, outgoing=False).run()
 
+    def connected_to(self, address: str) -> bool:
+        return any(c.identified and c.remote_id == address for c in self.connections)
+
     async def connect(self, host: str, port: int) -> None:
         while True:
-            try:
-                reader, writer = await asyncio.open_connection(host, port)
-            except OSError:
-                await asyncio.sleep(RECONNECT_DELAY)
-                continue
-            connection = Connection(self, reader, writer, outgoing=True)
-            await connection.run()
-            if connection.duplicate:
-                return
+            if not self.connected_to(f"{host}:{port}"):
+                try:
+                    reader, writer = await asyncio.open_connection(host, port)
+                except OSError:
+                    pass
+                else:
+                    await Connection(self, reader, writer, outgoing=True).run()
             await asyncio.sleep(RECONNECT_DELAY)
 
     def register(self, connection: Connection) -> None:
@@ -324,32 +338,46 @@ class Peer:
             self.schedule()
             await self.availability.wait()
         path = self.store.assemble(self.output_dir)
-        summary = self.summary(path)
-        (self.output_dir / "summary.json").write_text(json.dumps(summary, indent=2))
-        log.info("download complete: %s, %d bytes, sha256 %s (%s), blocks by source: %s",
-                 path, summary["size"], summary["sha256"], "ok" if summary["integrity_ok"] else "MISMATCH",
-                 ", ".join(f"{source}={count}" for source, count in summary["blocks_by_source"].items()))
-
-    def summary(self, path: Path) -> dict:
-        meta = self.store.meta
+        finished = time.monotonic()
         data = path.read_bytes()
         sha256 = hashlib.sha256(data).hexdigest()
-        finished = time.monotonic()
-        return {
-            "peer": self.id,
-            "neighbors": [f"{host}:{port}" for host, port in self.neighbors],
-            "file": str(path),
-            "size": len(data),
-            "expected_size": meta.size,
-            "sha256": sha256,
-            "expected_sha256": meta.sha256,
-            "integrity_ok": len(data) == meta.size and sha256 == meta.sha256,
-            "block_size": meta.block_size,
-            "block_count": meta.block_count,
-            "started_at": self.started_at,
-            "completed_at": now(),
+        meta = self.store.meta
+        self.completion = {
+            "at": now(),
             "elapsed_seconds": round(finished - self.started, 3),
             "download_seconds": round(finished - self.metadata_received, 3),
+            "file": str(path),
+            "size": len(data),
+            "sha256": sha256,
+            "integrity_ok": len(data) == meta.size and sha256 == meta.sha256,
+        }
+        self.write_summary()
+        log.info("download complete: %s, %d bytes, sha256 %s (%s), blocks by source: %s",
+                 path, len(data), sha256, "ok" if self.completion["integrity_ok"] else "MISMATCH",
+                 ", ".join(f"{source}={count}" for source, count in sorted(self.sources.items())))
+
+    def summary(self) -> dict:
+        meta = self.store.meta if self.store else None
+        return {
+            "peer": self.id,
+            "role": self.role,
+            "neighbors": [f"{host}:{port}" for host, port in self.neighbors],
+            "started_at": self.started_at,
+            "stopped_at": self.stopped_at,
+            "metadata": {
+                "name": meta.name,
+                "size": meta.size,
+                "block_size": meta.block_size,
+                "block_count": meta.block_count,
+                "sha256": meta.sha256,
+            } if meta else None,
+            "blocks_have": meta.block_count - self.store.remaining if meta else 0,
+            "completion": self.completion,
             "blocks_by_source": dict(sorted(self.sources.items())),
+            "blocks_served": dict(sorted(self.served.items())),
             "messages": {direction: dict(sorted(counts.items())) for direction, counts in self.messages.items()},
         }
+
+    def write_summary(self) -> None:
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        (self.output_dir / "summary.json").write_text(json.dumps(self.summary(), indent=2))
