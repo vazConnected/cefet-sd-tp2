@@ -37,7 +37,7 @@ def run_peer(args: argparse.Namespace) -> int:
     logging.basicConfig(level=logging.INFO, format=f"%(asctime)s [{args.host}:{args.port}] %(message)s")
     store = BlockStore.from_file(Metadata.load(args.meta), args.file) if args.file else None
     try:
-        asyncio.run(Peer(args.host, args.port, args.neighbors, store, args.output_dir).run())
+        asyncio.run(Peer(args.host, args.port, args.neighbors, store, args.output_dir, args.log_messages).run())
     except KeyboardInterrupt:
         pass
     return 0
@@ -62,6 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
     peer.add_argument("--file", type=Path, help="arquivo completo (seeder)")
     peer.add_argument("--meta", type=Path, help="metadado do arquivo (seeder)")
     peer.add_argument("--output-dir", type=Path, default=Path("."))
+    peer.add_argument("--log-messages", action="store_true", help="registra todas as mensagens trocadas")
     peer.set_defaults(handler=run_peer)
 
     return parser

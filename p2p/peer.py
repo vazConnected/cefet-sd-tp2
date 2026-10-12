@@ -1,7 +1,11 @@
 import asyncio
+import hashlib
+import json
 import logging
 import random
+import time
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 
 from p2p import protocol
@@ -12,8 +16,15 @@ from p2p.protocol import MessageType
 RECONNECT_DELAY = 1.0
 REQUEST_TIMEOUT = 5.0
 PIPELINE = 16
+CONTROL_MESSAGES = frozenset({
+    MessageType.HELLO, MessageType.GET_META, MessageType.META, MessageType.BITFIELD, MessageType.REJECT,
+})
 
 log = logging.getLogger("p2p")
+
+
+def now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
 class Connection:
@@ -30,8 +41,15 @@ class Connection:
         self.pending_bitfield: bytes | None = None
         self.pending: dict[int, asyncio.Future] = {}
 
+    def trace(self, direction: str, msg_type: MessageType, payload: bytes) -> None:
+        self.peer.messages[direction][msg_type.name] += 1
+        if self.peer.log_messages or msg_type in CONTROL_MESSAGES:
+            preposition = "to" if direction == "sent" else "from"
+            log.info("%s %s %s %s (%d bytes)", direction, msg_type.name, preposition, self.remote_id, len(payload))
+
     def send(self, msg_type: MessageType, payload: bytes = b"") -> None:
         protocol.write_message(self.writer, msg_type, payload)
+        self.trace("sent", msg_type, payload)
 
     def send_bitfield(self) -> None:
         self.send(MessageType.BITFIELD, protocol.pack_bitfield(self.peer.store.have))
@@ -54,12 +72,14 @@ class Connection:
     async def run(self) -> None:
         self.peer.connections.add(self)
         try:
-            self.send(MessageType.HELLO, self.peer.id.encode())
-            if self.peer.store:
-                self.send_bitfield()
-            await self.writer.drain()
+            if self.outgoing:
+                self.send(MessageType.HELLO, self.peer.id.encode())
+                await self.writer.drain()
             while not self.duplicate:
                 msg_type, payload = await protocol.read_message(self.reader)
+                if msg_type is MessageType.HELLO:
+                    self.remote_id = payload.decode(errors="replace")
+                self.trace("received", msg_type, payload)
                 self.handle(msg_type, payload)
                 await self.writer.drain()
         except (asyncio.IncompleteReadError, ConnectionError):
@@ -72,14 +92,18 @@ class Connection:
             for future in self.pending.values():
                 if not future.done():
                     future.set_result(None)
+            self.peer.request_metadata()
             self.peer.availability.set()
 
     def handle(self, msg_type: MessageType, payload: bytes) -> None:
         store = self.peer.store
         if msg_type is MessageType.HELLO:
-            self.remote_id = payload.decode(errors="replace")
             self.identified = True
+            if not self.outgoing:
+                self.send(MessageType.HELLO, self.peer.id.encode())
             self.peer.register(self)
+            if store and not self.duplicate:
+                self.send_bitfield()
         elif msg_type is MessageType.GET_META:
             if store:
                 self.send(MessageType.META, protocol.pack_meta(store.meta))
@@ -91,7 +115,7 @@ class Connection:
                 self.load_bitfield(payload)
             else:
                 self.pending_bitfield = payload
-                self.send(MessageType.GET_META)
+                self.peer.request_metadata()
         elif msg_type is MessageType.HAVE:
             index = protocol.unpack_index(payload)
             if store and index >= store.meta.block_count:
@@ -124,19 +148,26 @@ class Connection:
 
 class Peer:
     def __init__(self, host: str, port: int, neighbors: list[tuple[str, int]],
-                 store: BlockStore | None, output_dir: Path):
+                 store: BlockStore | None, output_dir: Path, log_messages: bool = False):
         self.host = host
         self.port = port
         self.id = f"{host}:{port}"
         self.neighbors = neighbors
         self.store = store
         self.output_dir = Path(output_dir)
+        self.log_messages = log_messages
         self.connections: set[Connection] = set()
+        self.metadata_source: Connection | None = None
         self.wanted: set[int] = set()
         self.sources: Counter[str] = Counter()
+        self.messages = {"sent": Counter(), "received": Counter()}
+        self.reported_decile = 0
         self.availability = asyncio.Event()
         self.metadata_ready = asyncio.Event()
         self.tasks: set[asyncio.Task] = set()
+        self.started_at = now()
+        self.started = time.monotonic()
+        self.metadata_received = self.started
         if store:
             self.metadata_ready.set()
 
@@ -153,6 +184,9 @@ class Peer:
     async def run(self) -> None:
         server = await asyncio.start_server(self.accept, self.host, self.port)
         log.info("listening on %s", self.id)
+        if self.store:
+            log.info("seeding %s: %d/%d blocks", self.store.meta.name,
+                     self.store.meta.block_count - self.store.remaining, self.store.meta.block_count)
         for host, port in self.neighbors:
             self.spawn(self.connect(host, port))
         if not self.store:
@@ -184,12 +218,28 @@ class Peer:
             return
         keep_initiator = min(self.id, connection.remote_id)
         drop = connection if connection.initiator != keep_initiator else duplicate
+        log.info("closing duplicate connection to %s", connection.remote_id)
         drop.duplicate = True
         drop.close()
+
+    def request_metadata(self) -> None:
+        if self.store or self.metadata_source in self.connections:
+            return
+        self.metadata_source = next((c for c in self.connections if c.pending_bitfield is not None), None)
+        if self.metadata_source:
+            self.metadata_source.send(MessageType.GET_META)
+            self.spawn(self.metadata_timeout(self.metadata_source))
+
+    async def metadata_timeout(self, connection: Connection) -> None:
+        await asyncio.sleep(REQUEST_TIMEOUT)
+        if not self.store and self.metadata_source is connection and connection in self.connections:
+            log.warning("metadata request to %s timed out, closing connection", connection.remote_id)
+            connection.close()
 
     def set_metadata(self, meta: Metadata, source: str) -> None:
         self.store = BlockStore(meta)
         self.wanted = set(range(meta.block_count))
+        self.metadata_received = time.monotonic()
         log.info("metadata received from %s: %s, %d bytes, %d blocks of %d bytes",
                  source, meta.name, meta.size, meta.block_count, meta.block_size)
         for connection in list(self.connections):
@@ -203,7 +253,8 @@ class Peer:
                 log.warning("protocol error from %s: %s", connection.remote_id, error)
                 connection.close()
                 continue
-            connection.send_bitfield()
+            if connection.identified:
+                connection.send_bitfield()
         self.metadata_ready.set()
 
     def offer(self, connection: Connection, indexes) -> None:
@@ -245,14 +296,26 @@ class Peer:
             self.release(index)
         else:
             if data is not None and self.store.add(index, data):
-                self.sources[connection.remote_id] += 1
-                payload = protocol.pack_index(index)
-                for other in self.connections:
-                    other.send(MessageType.HAVE, payload)
+                self.block_received(index, connection.remote_id)
             else:
+                if data is not None:
+                    log.warning("block %d from %s failed verification", index, connection.remote_id)
                 connection.remote_blocks.discard(index)
                 self.release(index)
         self.availability.set()
+
+    def block_received(self, index: int, source: str) -> None:
+        self.sources[source] += 1
+        log.info("block %d received from %s", index, source)
+        payload = protocol.pack_index(index)
+        for connection in self.connections:
+            if connection.identified:
+                connection.send(MessageType.HAVE, payload)
+        total = self.store.meta.block_count
+        done = total - self.store.remaining
+        if done * 10 // total > self.reported_decile:
+            self.reported_decile = done * 10 // total
+            log.info("progress: %d/%d blocks (%d%%)", done, total, done * 100 // total)
 
     async def download(self) -> None:
         await self.metadata_ready.wait()
@@ -261,6 +324,32 @@ class Peer:
             self.schedule()
             await self.availability.wait()
         path = self.store.assemble(self.output_dir)
-        sources = ", ".join(f"{source}={count}" for source, count in sorted(self.sources.items()))
-        log.info("download complete: %s, %d bytes, sha256 %s, blocks by source: %s",
-                 path, self.store.meta.size, self.store.meta.sha256, sources)
+        summary = self.summary(path)
+        (self.output_dir / "summary.json").write_text(json.dumps(summary, indent=2))
+        log.info("download complete: %s, %d bytes, sha256 %s (%s), blocks by source: %s",
+                 path, summary["size"], summary["sha256"], "ok" if summary["integrity_ok"] else "MISMATCH",
+                 ", ".join(f"{source}={count}" for source, count in summary["blocks_by_source"].items()))
+
+    def summary(self, path: Path) -> dict:
+        meta = self.store.meta
+        data = path.read_bytes()
+        sha256 = hashlib.sha256(data).hexdigest()
+        finished = time.monotonic()
+        return {
+            "peer": self.id,
+            "neighbors": [f"{host}:{port}" for host, port in self.neighbors],
+            "file": str(path),
+            "size": len(data),
+            "expected_size": meta.size,
+            "sha256": sha256,
+            "expected_sha256": meta.sha256,
+            "integrity_ok": len(data) == meta.size and sha256 == meta.sha256,
+            "block_size": meta.block_size,
+            "block_count": meta.block_count,
+            "started_at": self.started_at,
+            "completed_at": now(),
+            "elapsed_seconds": round(finished - self.started, 3),
+            "download_seconds": round(finished - self.metadata_received, 3),
+            "blocks_by_source": dict(sorted(self.sources.items())),
+            "messages": {direction: dict(sorted(counts.items())) for direction, counts in self.messages.items()},
+        }
