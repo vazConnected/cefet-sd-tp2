@@ -17,8 +17,8 @@ class Metadata:
     blocks: list[str]
 
     def __post_init__(self):
-        if self.size < 0:
-            raise ValueError("size must be non-negative")
+        if self.size <= 0:
+            raise ValueError("size must be positive")
         if self.block_size <= 0:
             raise ValueError("block_size must be positive")
         if self.block_count != math.ceil(self.size / self.block_size):
@@ -43,6 +43,8 @@ def create_metadata(path: Path, block_size: int = DEFAULT_BLOCK_SIZE) -> Metadat
     if block_size <= 0:
         raise ValueError("block_size must be positive")
     path = Path(path)
+    if path.stat().st_size == 0:
+        raise ValueError(f"{path}: empty file")
     file_hash = hashlib.sha256()
     blocks = []
     with path.open("rb") as f:
