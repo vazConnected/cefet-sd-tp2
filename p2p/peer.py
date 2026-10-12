@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import random
+from collections import Counter
 from pathlib import Path
 
 from p2p import protocol
@@ -8,6 +10,8 @@ from p2p.metadata import Metadata
 from p2p.protocol import MessageType
 
 RECONNECT_DELAY = 1.0
+REQUEST_TIMEOUT = 5.0
+PIPELINE = 16
 
 log = logging.getLogger("p2p")
 
@@ -21,7 +25,8 @@ class Connection:
         self.remote_id = "{}:{}".format(*writer.get_extra_info("peername")[:2])
         self.identified = False
         self.duplicate = False
-        self.remote_have: list[bool] | None = None
+        self.remote_blocks: set[int] = set()
+        self.candidates: list[int] = []
         self.pending_bitfield: bytes | None = None
         self.pending: dict[int, asyncio.Future] = {}
 
@@ -31,12 +36,20 @@ class Connection:
     def send_bitfield(self) -> None:
         self.send(MessageType.BITFIELD, protocol.pack_bitfield(self.peer.store.have))
 
-    async def request(self, index: int) -> bytes | None:
+    def request(self, index: int) -> asyncio.Future:
         future = asyncio.get_running_loop().create_future()
         self.pending[index] = future
         self.send(MessageType.REQUEST, protocol.pack_index(index))
-        await self.writer.drain()
-        return await future
+        return future
+
+    def close(self) -> None:
+        self.peer.connections.discard(self)
+        self.writer.close()
+
+    def load_bitfield(self, payload: bytes) -> None:
+        have = protocol.unpack_bitfield(payload, self.peer.store.meta.block_count)
+        self.remote_blocks.update(index for index, present in enumerate(have) if present)
+        self.peer.offer(self, self.remote_blocks)
 
     async def run(self) -> None:
         self.peer.connections.add(self)
@@ -55,11 +68,10 @@ class Connection:
         except protocol.ProtocolError as error:
             log.warning("protocol error from %s: %s", self.remote_id, error)
         finally:
-            self.peer.connections.discard(self)
+            self.close()
             for future in self.pending.values():
                 if not future.done():
                     future.set_result(None)
-            self.writer.close()
             self.peer.availability.set()
 
     def handle(self, msg_type: MessageType, payload: bytes) -> None:
@@ -76,11 +88,17 @@ class Connection:
                 self.peer.set_metadata(protocol.unpack_meta(payload), self.remote_id)
         elif msg_type is MessageType.BITFIELD:
             if store:
-                self.remote_have = protocol.unpack_bitfield(payload, store.meta.block_count)
-                self.peer.availability.set()
+                self.load_bitfield(payload)
             else:
                 self.pending_bitfield = payload
                 self.send(MessageType.GET_META)
+        elif msg_type is MessageType.HAVE:
+            index = protocol.unpack_index(payload)
+            if store and index >= store.meta.block_count:
+                raise protocol.ProtocolError(f"invalid block index: {index}")
+            self.remote_blocks.add(index)
+            if store:
+                self.peer.offer(self, [index])
         elif msg_type is MessageType.REQUEST:
             index = protocol.unpack_index(payload)
             data = store.get(index) if store else None
@@ -114,6 +132,8 @@ class Peer:
         self.store = store
         self.output_dir = Path(output_dir)
         self.connections: set[Connection] = set()
+        self.wanted: set[int] = set()
+        self.sources: Counter[str] = Counter()
         self.availability = asyncio.Event()
         self.metadata_ready = asyncio.Event()
         self.tasks: set[asyncio.Task] = set()
@@ -147,10 +167,14 @@ class Peer:
         while True:
             try:
                 reader, writer = await asyncio.open_connection(host, port)
-                break
             except OSError:
                 await asyncio.sleep(RECONNECT_DELAY)
-        await Connection(self, reader, writer, outgoing=True).run()
+                continue
+            connection = Connection(self, reader, writer, outgoing=True)
+            await connection.run()
+            if connection.duplicate:
+                return
+            await asyncio.sleep(RECONNECT_DELAY)
 
     def register(self, connection: Connection) -> None:
         duplicate = next((c for c in self.connections
@@ -161,39 +185,82 @@ class Peer:
         keep_initiator = min(self.id, connection.remote_id)
         drop = connection if connection.initiator != keep_initiator else duplicate
         drop.duplicate = True
-        drop.writer.close()
+        drop.close()
 
     def set_metadata(self, meta: Metadata, source: str) -> None:
         self.store = BlockStore(meta)
+        self.wanted = set(range(meta.block_count))
         log.info("metadata received from %s: %s, %d bytes, %d blocks of %d bytes",
                  source, meta.name, meta.size, meta.block_count, meta.block_size)
-        for connection in self.connections:
-            if connection.pending_bitfield is not None:
-                connection.remote_have = protocol.unpack_bitfield(connection.pending_bitfield, meta.block_count)
-                connection.pending_bitfield = None
+        for connection in list(self.connections):
+            payload, connection.pending_bitfield = connection.pending_bitfield, None
+            try:
+                if payload is None:
+                    self.offer(connection, connection.remote_blocks)
+                else:
+                    connection.load_bitfield(payload)
+            except protocol.ProtocolError as error:
+                log.warning("protocol error from %s: %s", connection.remote_id, error)
+                connection.close()
+                continue
             connection.send_bitfield()
         self.metadata_ready.set()
+
+    def offer(self, connection: Connection, indexes) -> None:
+        new = [index for index in indexes if index in self.wanted]
+        random.shuffle(new)
+        connection.candidates.extend(new)
         self.availability.set()
 
-    def find_source(self, index: int) -> Connection | None:
+    def release(self, index: int) -> None:
+        self.wanted.add(index)
         for connection in self.connections:
-            if connection.remote_have and connection.remote_have[index]:
-                return connection
+            if index in connection.remote_blocks:
+                connection.candidates.append(index)
+
+    def next_block(self, connection: Connection) -> int | None:
+        while connection.candidates:
+            index = connection.candidates.pop()
+            if index in self.wanted:
+                self.wanted.discard(index)
+                return index
         return None
+
+    def schedule(self) -> None:
+        for connection in list(self.connections):
+            while len(connection.pending) < PIPELINE:
+                index = self.next_block(connection)
+                if index is None:
+                    break
+                self.spawn(self.fetch(connection, index, connection.request(index)))
+
+    async def fetch(self, connection: Connection, index: int, future: asyncio.Future) -> None:
+        try:
+            data = await asyncio.wait_for(future, REQUEST_TIMEOUT)
+        except TimeoutError:
+            connection.pending.pop(index, None)
+            if connection in self.connections:
+                log.warning("request for block %d to %s timed out, closing connection", index, connection.remote_id)
+                connection.close()
+            self.release(index)
+        else:
+            if data is not None and self.store.add(index, data):
+                self.sources[connection.remote_id] += 1
+                payload = protocol.pack_index(index)
+                for other in self.connections:
+                    other.send(MessageType.HAVE, payload)
+            else:
+                connection.remote_blocks.discard(index)
+                self.release(index)
+        self.availability.set()
 
     async def download(self) -> None:
         await self.metadata_ready.wait()
-        store = self.store
-        for index in range(store.meta.block_count):
-            while not store.have[index]:
-                self.availability.clear()
-                source = self.find_source(index)
-                if source is None:
-                    await self.availability.wait()
-                    continue
-                data = await source.request(index)
-                if data is None or not store.add(index, data):
-                    if source.remote_have:
-                        source.remote_have[index] = False
-        path = store.assemble(self.output_dir)
-        log.info("download complete: %s, %d bytes, sha256 %s", path, store.meta.size, store.meta.sha256)
+        while not self.store.complete:
+            self.availability.clear()
+            self.schedule()
+            await self.availability.wait()
+        path = self.store.assemble(self.output_dir)
+        sources = ", ".join(f"{source}={count}" for source, count in sorted(self.sources.items()))
+        log.info("download complete: %s, %d bytes, sha256 %s, blocks by source: %s",
+                 path, self.store.meta.size, self.store.meta.sha256, sources)

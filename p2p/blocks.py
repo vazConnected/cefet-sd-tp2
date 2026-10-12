@@ -9,6 +9,7 @@ class BlockStore:
         self.meta = meta
         self.have = [False] * meta.block_count
         self.blocks: dict[int, bytes] = {}
+        self.remaining = meta.block_count
 
     @classmethod
     def from_file(cls, meta: Metadata, path: Path) -> "BlockStore":
@@ -23,17 +24,20 @@ class BlockStore:
 
     @property
     def complete(self) -> bool:
-        return all(self.have)
+        return self.remaining == 0
 
     def add(self, index: int, data: bytes) -> bool:
         if not 0 <= index < self.meta.block_count:
             return False
+        if self.have[index]:
+            return True
         if len(data) != self.meta.block_length(index):
             return False
         if hashlib.sha256(data).hexdigest() != self.meta.blocks[index]:
             return False
         self.blocks[index] = data
         self.have[index] = True
+        self.remaining -= 1
         return True
 
     def get(self, index: int) -> bytes | None:

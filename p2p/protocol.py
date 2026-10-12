@@ -19,6 +19,7 @@ class MessageType(IntEnum):
     REQUEST = 5
     PIECE = 6
     REJECT = 7
+    HAVE = 8
 
 
 class ProtocolError(Exception):
