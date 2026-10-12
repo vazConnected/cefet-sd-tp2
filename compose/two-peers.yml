@@ -1,0 +1,38 @@
+name: p2p-two-peers
+
+x-peer: &peer
+  image: p2p-peer
+  pull_policy: never
+  user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+
+services:
+  peer-a:
+    <<: *peer
+    build: ..
+    command: >
+      peer --host 172.28.0.11 --port 5000
+      --neighbors 172.28.0.12:5000
+      --file /data/${FILE:-file.bin} --meta /data/${FILE:-file.bin}.meta --output-dir /data
+    volumes:
+      - ../data/peer-a:/data
+    networks:
+      p2p:
+        ipv4_address: 172.28.0.11
+
+  peer-b:
+    <<: *peer
+    command: >
+      peer --host 172.28.0.12 --port 5000
+      --neighbors 172.28.0.11:5000
+      --output-dir /data
+    volumes:
+      - ../data/peer-b:/data
+    networks:
+      p2p:
+        ipv4_address: 172.28.0.12
+
+networks:
+  p2p:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
