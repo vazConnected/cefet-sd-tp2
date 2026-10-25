@@ -8,7 +8,7 @@ Dos 144 downloads, 144 foram aprovados em todos os critérios: SHA-256 e tamanho
 
 | Métrica | Definição |
 |---|---|
-| Tempo por leecher | Do início do processo até o arquivo remontado e verificado |
+| Tempo por leecher | Da inicialização do peer até o arquivo remontado e verificado |
 | Tempo do último leecher | Maior tempo entre os leechers de uma mesma execução |
 | Vazão | Tamanho do arquivo dividido pelo tempo desde o recebimento do metadado até a conclusão |
 | Blocos de outros leechers | Percentual de blocos recebidos de outros leechers, e não do seeder |
