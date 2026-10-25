@@ -41,6 +41,14 @@ def mean_std(values: list[float]) -> tuple[float, float]:
     return statistics.mean(values), statistics.stdev(values) if len(values) > 1 else 0.0
 
 
+def number(value: float, digits: int) -> str:
+    return f"{value:.{digits}f}".replace(".", ",")
+
+
+def mean_pm(mean: float, std: float, digits: int) -> str:
+    return f"{number(mean, digits)} ± {number(std, digits)}"
+
+
 def parse_sources(text: str) -> dict[str, int]:
     return {source: int(count) for source, count in (item.split("=") for item in text.split(";") if item)}
 
@@ -66,8 +74,12 @@ def aggregate(rows: list[dict]) -> list[dict]:
     result = []
     for (peers, block_size, label, size), group in sorted(groups.items()):
         last = defaultdict(float)
+        from_seeder = defaultdict(int)
+        transferred = defaultdict(int)
         for row in group:
             last[row["repetition"]] = max(last[row["repetition"]], row["elapsed_seconds"])
+            from_seeder[row["repetition"]] += row["sources"].get(SEEDER, 0)
+            transferred[row["repetition"]] += sum(row["sources"].values())
         by_peer = defaultdict(list)
         for row in group:
             from_leechers = sum(count for source, count in row["sources"].items() if source != SEEDER)
@@ -87,6 +99,7 @@ def aggregate(rows: list[dict]) -> list[dict]:
         for name, values in (
             ("leecher_time", [row["elapsed_seconds"] for row in group]),
             ("last_time", list(last.values())),
+            ("seeder_share", [100 * from_seeder[rep] / transferred[rep] for rep in transferred]),
             ("throughput", [row["file_size"] / MB / row["download_seconds"] for row in group]),
             ("messages_per_block", [(row["messages_sent"] + row["messages_received"]) / row["block_count"]
                                    for row in group]),
@@ -100,6 +113,7 @@ AGGREGATE_FIELDS = [
     "peers", "block_size", "file", "file_size", "block_count", "runs", "checks_ok",
     "leecher_time_mean", "leecher_time_std", "last_time_mean", "last_time_std",
     "throughput_mean", "throughput_std", "messages_per_block_mean", "messages_per_block_std",
+    "seeder_share_mean", "seeder_share_std",
     *[f"leecher_share_{peer}_{stat}" for peer in LEECHERS for stat in ("mean", "std")],
 ]
 
@@ -119,20 +133,21 @@ def write_markdown(entries: list[dict], rows: list[dict], path: Path) -> None:
     lines = [
         "# Resultados dos estudos de caso",
         "",
-        f"Matriz de {len(entries)} cenários (2 ou 4 peers × bloco de 1 KB ou 4 KB × 6 tamanhos de arquivo), "
-        f"{repetitions} repetições cada, executados no Docker. 1 KB = 1024 bytes e 1 MB = 1024² bytes.",
+        f"Matriz de {len(entries)} cenários, combinando 2 ou 4 peers, blocos de 1 KB ou 4 KB e 6 tamanhos de arquivo, "
+        f"com {repetitions} repetições cada, executada no Docker. 1 KB equivale a 1024 bytes e 1 MB a 1.048.576 bytes.",
         "",
-        f"**Verificação:** {ok}/{len(rows)} downloads de leechers aprovados em todas as checagens "
-        "(SHA-256 e tamanho do arquivo remontado, origens apenas entre vizinhos configurados, "
-        "blocos por origem nos logs iguais ao resumo, saída limpa dos containers).",
+        f"**Verificação:** {ok} de {len(rows)} downloads aprovados em todos os critérios: SHA-256 e tamanho do "
+        "arquivo remontado, origens restritas aos vizinhos configurados, blocos por origem nos logs iguais aos do "
+        "resumo e encerramento sem erro dos containers.",
         "",
         "## Métricas",
         "",
-        "- **Tempo por leecher:** do início do processo do leecher até o arquivo remontado e verificado.",
+        "- **Tempo por leecher:** do início do processo até o arquivo remontado e verificado.",
         "- **Tempo do último leecher:** maior tempo entre os leechers de uma mesma execução.",
         "- **Vazão:** tamanho do arquivo dividido pelo tempo desde o recebimento do metadado até a conclusão.",
-        "- **Blocos de outros leechers:** percentual de blocos que o leecher recebeu de outros leechers "
-        "em vez do seeder.",
+        "- **Blocos de outros leechers:** percentual de blocos recebidos de outros leechers, e não do seeder.",
+        "- **Blocos servidos pelo seeder:** percentual de todos os blocos transferidos em uma execução que "
+        "partiram do seeder.",
         "- **Mensagens por bloco:** mensagens enviadas e recebidas pelo leecher divididas pelo número de blocos.",
         "",
         "Valores em média ± desvio padrão.",
@@ -144,27 +159,28 @@ def write_markdown(entries: list[dict], rows: list[dict], path: Path) -> None:
     for e in entries:
         lines.append(
             f"| {e['peers']} | {e['block_size'] // 1024} KB | {e['file']} ({size_label(e['file_size'])}) "
-            f"| {e['block_count']} | {e['leecher_time_mean']:.3f} ± {e['leecher_time_std']:.3f} "
-            f"| {e['last_time_mean']:.3f} ± {e['last_time_std']:.3f} "
-            f"| {e['throughput_mean']:.1f} ± {e['throughput_std']:.1f} "
-            f"| {e['messages_per_block_mean']:.2f} ± {e['messages_per_block_std']:.2f} "
+            f"| {e['block_count']} | {mean_pm(e['leecher_time_mean'], e['leecher_time_std'], 3)} "
+            f"| {mean_pm(e['last_time_mean'], e['last_time_std'], 3)} "
+            f"| {mean_pm(e['throughput_mean'], e['throughput_std'], 1)} "
+            f"| {mean_pm(e['messages_per_block_mean'], e['messages_per_block_std'], 2)} "
             f"| {e['checks_ok']}/{e['runs']} |")
     lines += [
         "",
         "## Origem dos blocos com 4 peers",
         "",
-        "Percentual de blocos que cada leecher recebeu de outros leechers em vez do seeder (peer-a). "
-        "peer-d não é vizinho do seeder, portanto todos os seus blocos vêm de peer-b e peer-c. "
-        "Com 2 peers, o único vizinho do leecher é o seeder, que fornece 100% dos blocos.",
+        "Como peer-d não é vizinho do seeder (peer-a), todos os seus blocos vêm de peer-b e peer-c. "
+        "Com 2 peers, o único vizinho do leecher é o seeder, que fornece todos os blocos.",
         "",
-        "| Bloco | Arquivo | peer-b (%) | peer-c (%) | peer-d (%) |",
-        "|---|---|---|---|---|",
+        "| Bloco | Arquivo | Blocos de outros leechers: peer-b (%) | peer-c (%) | peer-d (%) "
+        "| Blocos servidos pelo seeder (%) |",
+        "|---|---|---|---|---|---|",
     ]
     for e in entries:
         if e["peers"] == 4:
             share = e["leecher_share"]
             lines.append(f"| {e['block_size'] // 1024} KB | {e['file']} ({size_label(e['file_size'])}) | "
-                         + " | ".join(f"{share[peer][0]:.1f} ± {share[peer][1]:.1f}" for peer in LEECHERS) + " |")
+                         + " | ".join(mean_pm(*share[peer], 1) for peer in LEECHERS)
+                         + f" | {mean_pm(e['seeder_share_mean'], e['seeder_share_std'], 1)} |")
     lines += [
         "",
         "## Gráficos",
@@ -214,7 +230,7 @@ def line_chart(entries: list[dict], metric: str, title: str, ylabel: str, path: 
     if log_y:
         ax.set_yscale("log")
         ax.yaxis.set_major_locator(LogLocator(subs=(1.0, 2.0, 5.0)))
-        ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:g}"))
+        ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:g}".replace(".", ",")))
     sizes = sorted({e["file_size"] for e in entries})
     ends = []
     for (peers, block_size), (color, marker, linestyle) in SERIES.items():
@@ -277,7 +293,7 @@ def main() -> None:
     line_chart(entries, "last_time", "Tempo até o último leecher concluir", "Tempo (s)",
                charts / "completion_time.png", log_y=True)
     line_chart(entries, "throughput", "Vazão por leecher", "Vazão (MB/s)", charts / "throughput.png", log_y=True)
-    line_chart(entries, "messages_per_block", "Mensagens por bloco por leecher", "Mensagens por bloco",
+    line_chart(entries, "messages_per_block", "Mensagens trocadas por bloco", "Mensagens por bloco",
                charts / "messages_per_block.png", log_y=False)
     sources_chart(entries, charts / "block_sources.png")
     print(f"{len(entries)} cenários agregados em {args.results}")
