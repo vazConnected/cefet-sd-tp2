@@ -136,19 +136,20 @@ def write_markdown(entries: list[dict], rows: list[dict], path: Path) -> None:
         f"Matriz de {len(entries)} cenários, combinando 2 ou 4 peers, blocos de 1 KB ou 4 KB e 6 tamanhos de arquivo, "
         f"com {repetitions} repetições cada, executada no Docker. 1 KB equivale a 1024 bytes e 1 MB a 1.048.576 bytes.",
         "",
-        f"**Verificação:** {ok} de {len(rows)} downloads aprovados em todos os critérios: SHA-256 e tamanho do "
-        "arquivo remontado, origens restritas aos vizinhos configurados, blocos por origem nos logs iguais aos do "
-        "resumo e encerramento sem erro dos containers.",
+        f"Dos {len(rows)} downloads, {ok} foram aprovados em todos os critérios: SHA-256 e tamanho do arquivo "
+        "remontado, origens restritas aos vizinhos configurados, blocos por origem nos logs iguais aos do resumo e "
+        "encerramento sem erro dos containers.",
         "",
         "## Métricas",
         "",
-        "- **Tempo por leecher:** do início do processo até o arquivo remontado e verificado.",
-        "- **Tempo do último leecher:** maior tempo entre os leechers de uma mesma execução.",
-        "- **Vazão:** tamanho do arquivo dividido pelo tempo desde o recebimento do metadado até a conclusão.",
-        "- **Blocos de outros leechers:** percentual de blocos recebidos de outros leechers, e não do seeder.",
-        "- **Blocos servidos pelo seeder:** percentual de todos os blocos transferidos em uma execução que "
-        "partiram do seeder.",
-        "- **Mensagens por bloco:** mensagens enviadas e recebidas pelo leecher divididas pelo número de blocos.",
+        "| Métrica | Definição |",
+        "|---|---|",
+        "| Tempo por leecher | Do início do processo até o arquivo remontado e verificado |",
+        "| Tempo do último leecher | Maior tempo entre os leechers de uma mesma execução |",
+        "| Vazão | Tamanho do arquivo dividido pelo tempo desde o recebimento do metadado até a conclusão |",
+        "| Blocos de outros leechers | Percentual de blocos recebidos de outros leechers, e não do seeder |",
+        "| Blocos servidos pelo seeder | Percentual de todos os blocos transferidos em uma execução que partiram do seeder |",
+        "| Mensagens por bloco | Mensagens enviadas e recebidas pelo leecher divididas pelo número de blocos |",
         "",
         "Valores em média ± desvio padrão.",
         "",
