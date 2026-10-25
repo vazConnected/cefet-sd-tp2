@@ -149,8 +149,8 @@ Os logs vão para a saída de erro e registram as mensagens de controle, cada bl
 | Vizinhos | Lista estática definida na inicialização, sem tracker |
 | Metadado | Só o seeder inicial recebe o `.meta`; os leechers o pedem a um vizinho por vez |
 | Armazenamento | Blocos verificados ficam em memória, e o arquivo é gravado uma vez, depois de receber todos e conferir o SHA-256 |
-| Escolha de blocos | Aleatória entre os blocos que faltam e que o vizinho tem, para que os leechers tenham blocos diferentes a trocar |
-| Pedidos simultâneos | Até 16 por conexão; em medições com 20 MB, a vazão praticamente se estabiliza a partir desse valor |
+| Escolha de blocos | Os blocos anunciados no `BITFIELD` de um vizinho são pedidos em ordem aleatória, para que os leechers tenham blocos diferentes a trocar; os anunciados depois por `HAVE` são pedidos primeiro |
+| Pedidos simultâneos | Até 16 por conexão; em medição preliminar com 20 MB, passar de 16 para 64 reduziu o tempo em menos de 10% |
 | Falhas | Bloco rejeitado ou com hash inválido é pedido a outro vizinho; vizinho sem resposta em 5 s é desconectado; conexões de saída são refeitas a cada 1 s |
 | Conexões duplicadas | Quando dois peers se conectam um ao outro, os dois mantêm a conexão iniciada pelo peer de menor `IP:porta` |
 | Encerramento | `SIGTERM` e `SIGINT` fecham as conexões e gravam o resumo, preservando as estatísticas ao parar os containers |
