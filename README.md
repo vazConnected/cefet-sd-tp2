@@ -143,15 +143,17 @@ Os logs vão para a saída de erro e registram as mensagens de controle, cada bl
 
 ## Decisões de projeto
 
-- **Concorrência:** `asyncio`, com sockets não bloqueantes e um laço de eventos por processo. O mesmo processo aceita conexões e se conecta aos vizinhos.
-- **Sem tracker:** os vizinhos são estáticos, definidos na inicialização de cada peer.
-- **Metadado pelo protocolo:** só o seeder inicial recebe o `.meta`. Os leechers o pedem a um vizinho por vez.
-- **Blocos em memória:** o leecher guarda os blocos verificados em memória e grava o arquivo uma única vez, depois de receber todos e conferir o SHA-256 do arquivo completo.
-- **Escolha de blocos:** aleatória entre os blocos que faltam e que o vizinho tem. Assim, os leechers passam a ter blocos diferentes para trocar entre si.
-- **Pedidos simultâneos:** até 16 por conexão. Em medições com 20 MB, a vazão praticamente se estabiliza a partir desse valor.
-- **Falhas:** um bloco rejeitado ou com hash inválido é pedido a outro vizinho. Um vizinho sem resposta em 5 s é desconectado, e as conexões de saída são refeitas a cada 1 s.
-- **Conexões duplicadas:** quando dois peers se conectam um ao outro, os dois mantêm a conexão iniciada pelo peer de menor `IP:porta`.
-- **Encerramento:** `SIGTERM` e `SIGINT` fecham as conexões e gravam o resumo, o que permite parar os containers sem perder as estatísticas.
+| Aspecto | Decisão |
+|---|---|
+| Concorrência | `asyncio`, com sockets não bloqueantes e um laço de eventos por processo, que aceita conexões e se conecta aos vizinhos |
+| Vizinhos | Lista estática definida na inicialização, sem tracker |
+| Metadado | Só o seeder inicial recebe o `.meta`; os leechers o pedem a um vizinho por vez |
+| Armazenamento | Blocos verificados ficam em memória, e o arquivo é gravado uma vez, depois de receber todos e conferir o SHA-256 |
+| Escolha de blocos | Aleatória entre os blocos que faltam e que o vizinho tem, para que os leechers tenham blocos diferentes a trocar |
+| Pedidos simultâneos | Até 16 por conexão; em medições com 20 MB, a vazão praticamente se estabiliza a partir desse valor |
+| Falhas | Bloco rejeitado ou com hash inválido é pedido a outro vizinho; vizinho sem resposta em 5 s é desconectado; conexões de saída são refeitas a cada 1 s |
+| Conexões duplicadas | Quando dois peers se conectam um ao outro, os dois mantêm a conexão iniciada pelo peer de menor `IP:porta` |
+| Encerramento | `SIGTERM` e `SIGINT` fecham as conexões e gravam o resumo, preservando as estatísticas ao parar os containers |
 
 ## Resultados
 
@@ -164,8 +166,10 @@ Os 144 downloads dos estudos de caso foram aprovados em todas as verificações.
 | 4 | 1 KB | 3,559 ± 0,032 | 5,9 ± 0,1 | 7,99 |
 | 4 | 4 KB | 1,092 ± 0,054 | 19,9 ± 1,0 | 7,97 |
 
-- **Tamanho do bloco:** com blocos de 4 KB, a vazão é cerca de 3,4 vezes maior que com 1 KB. O arquivo passa a ter 4 vezes menos blocos, o que reduz na mesma proporção as mensagens e as verificações de hash.
-- **Quantidade de peers:** com 4 peers, cada leecher fica cerca de 2 vezes mais lento, mas o sistema entrega 3 cópias do arquivo. Com blocos de 1 KB, a vazão agregada (total entregue dividido pelo tempo do último leecher) sobe de 11,3 MB/s para 16,9 MB/s.
-- **Leechers como seeders:** com 4 peers e arquivos a partir de 5 MB, o seeder enviou de 34% a 37% de todos os blocos transferidos, o equivalente a cerca de uma cópia do arquivo. Os leechers enviaram o restante. peer-d, que não é vizinho do seeder, recebeu todos os blocos de peer-b e peer-c.
+Com blocos de 4 KB, a vazão é cerca de 3,4 vezes maior que com 1 KB. O arquivo passa a ter 4 vezes menos blocos e, na mesma proporção, menos mensagens e verificações de hash.
+
+Com 4 peers, cada leecher fica cerca de 2 vezes mais lento, mas o sistema entrega 3 cópias do arquivo. Com blocos de 1 KB, a vazão agregada (total entregue dividido pelo tempo do último leecher) sobe de 11,3 MB/s para 16,9 MB/s.
+
+Com 4 peers e arquivos a partir de 5 MB, o seeder enviou de 34% a 37% de todos os blocos transferidos, o equivalente a cerca de uma cópia do arquivo. Os leechers enviaram o restante, e peer-d, que não é vizinho do seeder, recebeu todos os blocos de peer-b e peer-c.
 
 A tabela completa e os gráficos estão em [results/summary.md](results/summary.md).
