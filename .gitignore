@@ -221,3 +221,6 @@ __marimo__/
 
 # Peer data
 data/
+
+# Report
+docs/
